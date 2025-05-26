@@ -51,6 +51,7 @@ def init_predefined_dispatch_mode():
     Dispatch.register("DP_COMPUTE_METRIC")
     # This is a special dispatch mode for vllm ExternalRayDistributedExecutor
     Dispatch.register("DIRECT_ROLLOUT_METHOD")
+    Dispatch.register("GENERATOR")
 
 
 class Execute(DynamicEnum):
@@ -372,6 +373,47 @@ def dispatch_dp_compute_data_proto(worker_group, *args, **kwargs):
     )
     return splitted_args, splitted_kwargs
 
+def dispatch_generic_generator(worker_group, *args, **kwargs):
+    return dispatch_dp_compute_data_proto(worker_group, *args, **kwargs)
+
+
+def collect_generic_generator(worker_group, _):
+    """
+    Poll every worker's remote method and yield available results.
+    When a worker returns None (generator exhausted), remove it from polling.
+    """
+    import ray
+    # Determine which method to call based on what's available
+    if hasattr(worker_group._workers[0], 'actor_rollout_generate_sequences_async'):
+        method_name = 'actor_rollout_generate_sequences_async'
+    elif hasattr(worker_group._workers[0], 'rollout_generate_sequences_async'):
+        method_name = 'rollout_generate_sequences_async'
+    else:
+        method_name = 'generate_sequences_async'
+
+    # Initialize with remote calls to the appropriate method
+    active_workers = {worker: getattr(worker, method_name).remote() 
+                     for worker in worker_group._workers}
+    
+    while active_workers:
+        ready_futures, _ = ray.wait(list(active_workers.values()), num_returns=1)
+        for fut in ready_futures:
+            result = ray.get(fut)
+            # Find the worker corresponding to this future
+            worker = None
+            for w, pending in active_workers.items():
+                if pending == fut:
+                    worker = w
+                    break
+            
+            if result is not None:
+                yield result
+                # Queue up next result from this worker using the same method
+                active_workers[worker] = getattr(worker, method_name).remote()
+            else:
+                # Worker is done, remove it
+                del active_workers[worker]
+
 
 def dispatch_dp_compute_data_proto_with_func(worker_group, *args, **kwargs):
     from verl.single_controller.base.worker_group import WorkerGroup
@@ -436,6 +478,10 @@ DISPATCH_MODE_FN_REGISTRY = {
     Dispatch.DIRECT_ROLLOUT_METHOD: {
         "dispatch_fn": dummy_direct_rollout_call,
         "collect_fn": dummy_direct_rollout_call,
+    },
+    Dispatch.GENERATOR: {  # For launching remote generators.
+            'dispatch_fn': dispatch_generic_generator,
+            'collect_fn': collect_generic_generator,
     },
 }
 
