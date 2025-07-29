@@ -15,7 +15,8 @@
 from .agent_loop import AgentLoopBase, AgentLoopManager
 from .single_turn_agent_loop import SingleTurnAgentLoop
 from .tool_agent_loop import ToolAgentLoop
+from .interaction_agent_loop import InteractionAgentLoop
 
-_ = [SingleTurnAgentLoop, ToolAgentLoop]
+_ = [SingleTurnAgentLoop, ToolAgentLoop, InteractionAgentLoop]
 
 __all__ = ["AgentLoopBase", "AgentLoopManager"]
