@@ -60,6 +60,7 @@ from verl.utils.metric import reduce_metrics
 from verl.utils.seqlen_balancing import get_seqlen_balanced_partitions, log_seqlen_unbalance
 from verl.utils.torch_functional import masked_mean
 from verl.utils.tracking import ValidationGenerationsLogger
+from velastic.manager import IterManager
 
 WorkerType = type[Worker]
 
@@ -1067,10 +1068,11 @@ class RayPPOTrainer:
         # we start from step 1
         self.global_steps += 1
         last_val_metrics = None
-        self.max_steps_duration = 0
+        iter_mngr = IterManager(total_iters=self.total_training_steps,save_ckpt_time=60,predict_freq=1,redundant_time=self.config.trainer.esi_redundant_time)
 
         for epoch in range(self.config.trainer.total_epochs):
             for batch_dict in self.train_dataloader:
+                iter_mngr.iter()
                 metrics = {}
                 timing_raw = {}
 
@@ -1308,10 +1310,7 @@ class RayPPOTrainer:
                         metrics.update(val_metrics)
 
                     # Check if the ESI (Elastic Server Instance)/training plan is close to expiration.
-                    esi_close_to_expiration = should_save_ckpt_esi(
-                        max_steps_duration=self.max_steps_duration,
-                        redundant_time=self.config.trainer.esi_redundant_time,
-                    )
+                    esi_close_to_expiration = iter_mngr.should_save_ckpt()
                     # Check if the conditions for saving a checkpoint are met.
                     # The conditions include a mandatory condition (1) and
                     # one of the following optional conditions (2/3/4):
