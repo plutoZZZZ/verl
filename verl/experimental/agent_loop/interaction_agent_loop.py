@@ -5,7 +5,7 @@ from typing import List, Dict, Any
 from uuid import uuid4
 from pydantic import BaseModel
 
-from .agent_loop import AgentLoopBase, AgentLoopOutput
+from .agent_loop import AgentLoopBase, AgentLoopOutput, register
 from verl.utils.profiler import simple_timer
 from verl.utils.rollout_trace import rollout_trace_op
 
@@ -17,7 +17,7 @@ class InteractionAgentLoopOutput(AgentLoopOutput):
     turn_scores: List[float] = []
     interaction_final_scores: Dict[str, float] = {}
 
-
+@register("interaction_agent")
 class InteractionAgentLoop(AgentLoopBase):
     @classmethod
     def init_class(cls, config, tokenizer, **kwargs):
@@ -112,3 +112,11 @@ class InteractionAgentLoop(AgentLoopBase):
     async def calculate_turn_score(self, response_text: str) -> float:
         """Base scoring method (to be implemented by subclasses)"""
         raise NotImplementedError("Scoring method must be implemented in subclasses")
+    
+
+
+@register("test_interaction_agent")
+class TestInteractionAgentLoop(InteractionAgentLoop):
+    async def calculate_turn_score(self, response_text: str) -> float:
+        """实际业务场景的评分示例：响应长度评分"""
+        return len(response_text) * 0.1
