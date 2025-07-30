@@ -118,5 +118,4 @@ class InteractionAgentLoop(AgentLoopBase):
 @register("test_interaction_agent")
 class TestInteractionAgentLoop(InteractionAgentLoop):
     async def calculate_turn_score(self, response_text: str) -> float:
-        """实际业务场景的评分示例：响应长度评分"""
         return len(response_text) * 0.1
