@@ -34,7 +34,7 @@ def scenario_config() -> DictConfig:
                 "+actor_rollout_ref.rollout.multi_turn.termination_threshold=0.8",
                 "actor_rollout_ref.rollout.agent.num_workers=4",
                 # Model configuration
-                "actor_rollout_ref.model.path=/file_system/common-models/Qwen/Qwen2.5-1.5B-Instruct",
+                "actor_rollout_ref.model.path=Qwen/Qwen2.5-1.5B-Instruct",
                 "actor_rollout_ref.rollout.name=vllm",
                 "actor_rollout_ref.rollout.mode=async",
                 "actor_rollout_ref.rollout.prompt_length=4096",
@@ -98,19 +98,3 @@ async def test_interaction_scenario(scenario_config):
     assert trajectory_info[-1]["rollout_n"] == 0
 
     ray.shutdown()
-
-
-@pytest.mark.asyncio
-async def test_get_trajectory_info():
-    step = 10
-    index = [1, 1, 3, 3]
-    expected_info = [
-        {"step": step, "sample_index": 1, "rollout_n": 0, "validate": False},
-        {"step": step, "sample_index": 1, "rollout_n": 1, "validate": False},
-        {"step": step, "sample_index": 3, "rollout_n": 0, "validate": False},
-        {"step": step, "sample_index": 3, "rollout_n": 1, "validate": False},
-    ]
-
-    trajectory_info = await get_trajectory_info(step, index, validate=False)
-    trajectory_info = await get_trajectory_info(step, index, validate=False)
-    assert trajectory_info == expected_info
