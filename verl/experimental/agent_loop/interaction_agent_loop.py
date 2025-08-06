@@ -40,7 +40,6 @@ class InteractionAgentLoop(AgentLoopBase):
         cls.max_assistant_turns = config.actor_rollout_ref.rollout.multi_turn.max_assistant_turns
         cls.prompt_length = config.actor_rollout_ref.rollout.prompt_length
         cls.response_length = config.actor_rollout_ref.rollout.response_length
-        cls.termination_threshold = config.actor_rollout_ref.rollout.get("termination_threshold", 0.8)
 
     def __init__(self, **kwargs):
         """Initialize agent loop, each sample will have its own loop instance.
@@ -52,15 +51,11 @@ class InteractionAgentLoop(AgentLoopBase):
         """
         super().__init__(**kwargs)
         # Initialize interaction_map for each instance
-        self.interaction_map: dict[str, BaseInteraction] = initialize_interactions_from_config(interaction_config_file=self.config.actor_rollout_ref.rollout.multi_turn.interaction_config_path)
-        # Initialize interaction_instances to store instance IDs
-        self.interaction_instances: dict[str, str] = {}
-        for name, interaction in self.interaction_map.items():
-            instance_id = interaction.start_interaction()
-            self.interaction_instances[name] = instance_id
+        self.interaction_map: dict[str, BaseInteraction] = self._initialize_interactions(self.config)
 
     @rollout_trace_op
-    async def run(self, messages: List[Dict[str, Any]], sampling_params: Dict[str, Any]) -> InteractionAgentLoopOutput:
+    async def run(self, sampling_params: dict[str, Any], **kwargs) -> InteractionAgentLoopOutput:
+        messages = list(kwargs["raw_prompt"])
         metrics = {}
         request_id = uuid4().hex
         prompt_ids = await self.loop.run_in_executor(
@@ -74,7 +69,17 @@ class InteractionAgentLoop(AgentLoopBase):
         response_mask = []
         turn_scores = []
         user_turns, assistant_turns = 0, 0
-
+        # Initialize interaction
+        interaction_kwargs = kwargs["extra_info"]["interaction_kwargs"]
+        interaction_name = interaction_kwargs.get("name", "gsm8k")  # Default to gsm8k for backward compatibility
+        if interaction_name not in self.interaction_map:
+            raise ValueError(
+                f"Interaction '{interaction_name}' not found in interaction_map. Available interactions: "
+                f"{list(self.interaction_map.keys())}"
+            )
+        interaction = self.interaction_map[interaction_name]
+        await interaction.start_interaction(request_id, **interaction_kwargs)
+        # Main loop
         while True:
             # Generate assistant response
             with simple_timer("generate_sequences", metrics):
@@ -87,23 +92,6 @@ class InteractionAgentLoop(AgentLoopBase):
             response_mask += [1] * len(response_ids)
             assistant_turns += 1
 
-            # Calculate turn score
-            # Decode response before scoring
-            loop = asyncio.get_running_loop()
-            response_text = await loop.run_in_executor(
-                None, 
-                self.tokenizer.decode, 
-                response_ids
-            )
-            
-            # Calculate score with text response
-            turn_score = await self.calculate_turn_score(response_text)
-            turn_scores.append(turn_score)
-
-            # Termination conditions (keep same check order as tool_agent)
-            if turn_score >= self.termination_threshold:
-                metrics["termination_reason"] = "threshold_reached"
-                break
             if len(response_mask) >= self.response_length:
                 metrics["termination_reason"] = "max_length"
                 break
@@ -113,6 +101,35 @@ class InteractionAgentLoop(AgentLoopBase):
             if self.max_user_turns and user_turns >= self.max_user_turns:
                 metrics["termination_reason"] = "max_user_turns"
                 break
+            # Calculate turn score
+            # Decode response before scoring
+            loop = asyncio.get_running_loop()
+            response_text = await loop.run_in_executor(
+                None, 
+                self.tokenizer.decode, 
+                response_ids
+            )
+            messages.append({"role": "assistant", "content": response_text})
+            # Calculate score with text response
+            should_terminate_sequence, content, reward, metrics = await interaction.generate_response(
+                request_id, messages, interaction_kwargs
+            )
+            turn_scores.append(reward)
+            messages.append({"role": "user", "content": content})
+            user_turns += 1
+            interaction_response_ids = await self.loop.run_in_executor(
+                None,
+                lambda messages = content: self.tokenizer.apply_chat_template(
+                    messages, add_generation_prompt=True, tokenize=True
+                ),
+            )
+            interaction_response_ids = interaction_response_ids[len(self.system_prompt) :]
+            if should_terminate_sequence:
+                metrics["termination_reason"] = "interaction_terminated"
+                break
+            prompt_ids += interaction_response_ids
+            response_mask += [0] * len(interaction_response_ids)
+            user_turns += 1
 
         # Prepare output (aligned with tool_agent's output structure)
         response_ids = prompt_ids[-len(response_mask):]
@@ -126,17 +143,18 @@ class InteractionAgentLoop(AgentLoopBase):
             metrics=metrics,
             turn_scores=turn_scores,
         )
+    
+    def _initialize_interactions(self, config):
+        """Initialize interactions from configuration.
 
-    async def calculate_turn_score(self, response_text: str) -> float:
-        """Calculate turn score using interactions"""
-        total_score = 0.0
-        count = 0
-        for name, interaction in self.interaction_map.items():
-            instance_id = self.interaction_instances[name]
-            # Create a simple message structure for the interaction
-            messages = [{"role": "assistant", "content": response_text}]
-            # Call generate_response to get the turn score
-            should_terminate_sequence, content, reward, metrics = await interaction.generate_response(instance_id, messages)
-            total_score += reward
-            count += 1
-        return total_score / count if count > 0 else 0.0
+        Returns:
+            dict[str, BaseInteraction]: A dictionary mapping interaction names to interaction instances.
+        """
+        if config.actor_rollout_ref.rollout.multi_turn.interaction_config_path is None:
+            return {}
+
+        interaction_config_file = config.actor_rollout_ref.rollout.multi_turn.interaction_config_path
+        interaction_map = initialize_interactions_from_config(interaction_config_file)
+
+        logger.info(f"Initialize interactions from configuration: interaction_map: {list(interaction_map.keys())}")
+        return interaction_map
